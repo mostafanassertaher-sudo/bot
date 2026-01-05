@@ -1,5 +1,4 @@
 import os
-import time
 import telebot
 from telebot import types
 from yt_dlp import YoutubeDL
@@ -8,53 +7,73 @@ from yt_dlp import YoutubeDL
 API_TOKEN = '8514462418:AAGo0dc4ZkaphwvyL8JaoFbOEhX9Ho6ksok'
 bot = telebot.TeleBot(API_TOKEN)
 
-# اسم الملف بالظبط كما في الصورة (lowercase m)
+# اسم الملف كما في الصورة (lowercase m)
 COOKIE_FILE = 'm.youtube.com_cookies.txt'
 
+# مخزن مؤقت للروابط
 user_data = {}
-
-def progress_hook(d, message, last_update_time):
-    if d['status'] == 'downloading':
-        p = d.get('_percent_str', '0%')
-        s = d.get('_speed_str', 'N/A')
-        current_time = time.time()
-        if current_time - last_update_time[0] > 3:
-            try:
-                bot.edit_message_text(f"جاري التحميل... ⏳\nالنسبة: {p}\nالسرعة: {s}", message.chat.id, message.message_id)
-                last_update_time[0] = current_time
-            except: pass
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    # فحص لو الملف موجود فعلياً في السيرفر
-    if os.path.exists(COOKIE_FILE):
-        status = "✅ ملف الكوكيز جاهز"
-    else:
-        status = "❌ ملف الكوكيز مش موجود جنبه"
-    bot.reply_to(message, f"أهلاً يا درش! {status}\nابعت اللينك دلوقتي.")
+    bot.reply_to(message, "أهلاً يا درش! ابعت اللينك واختار الجودة وهنزلك الفيديو فوراً 🎬")
 
 @bot.message_handler(func=lambda message: True)
 def handle_link(message):
     url = message.text
     if "http" not in url: return
-    msg = bot.reply_to(message, "جاري الفحص... 🔍")
+    
+    # حفظ الرابط في الذاكرة
+    user_data[message.chat.id] = url
+    
+    # أزرار اختيار الجودة
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn1 = types.InlineKeyboardButton("720p", callback_data="720")
+    btn2 = types.InlineKeyboardButton("1080p", callback_data="1080")
+    markup.add(btn1, btn2)
+    
+    bot.reply_to(message, "اختار الجودة المطلوبة:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    chat_id = call.message.chat.id
+    if chat_id not in user_data: return
+    
+    url = user_data[chat_id]
+    quality = call.data
+    
+    bot.delete_message(chat_id, call.message.message_id)
+    status_msg = bot.send_message(chat_id, "جاري التحميل... 🚀")
+    
+    # إعدادات التحميل مع ميزة المشاهدة الفورية (FastStart)
+    ydl_opts = {
+        'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        
+        # اختيار الجودة وإجبار صيغة MP4 للمشاهدة الفورية
+        'format': f'best[ext=mp4][height<={quality}]/best[height<={quality}]',
+        'outtmpl': f'video_{chat_id}.mp4',
+        
+        # ميزة المشاهدة الفورية (نقل الفهرس لأول الفيديو)
+        'postprocessor_args': ['-movflags', '+faststart'],
+        
+        'max_filesize': 48000000, # 48 ميجا ليميت تليجرام
+        'noplaylist': True,
+        'quiet': True
+    }
+
     try:
-        ydl_opts = {
-            'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'format': 'best[height<=720]', # جودة 720 عشان الحجم
-            'outtmpl': f'video_{message.chat.id}.%(ext)s',
-            'progress_hooks': [lambda d: progress_hook(d, msg, [time.time()])],
-            'max_filesize': 48000000,
-        }
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            with open(filename, 'rb') as f:
-                bot.send_video(message.chat.id, f, caption=info.get('title'))
+            filename = f"video_{chat_id}.mp4"
+
+        with open(filename, 'rb') as f:
+            bot.send_video(chat_id, f, supports_streaming=True) # تفعيل المشاهدة الفورية
+        
+        if os.path.exists(filename):
             os.remove(filename)
-            bot.delete_message(message.chat.id, msg.message_id)
+        bot.delete_message(chat_id, status_msg.message_id)
+        
     except Exception as e:
-        bot.edit_message_text(f"خطأ: {str(e)}", message.chat.id, msg.message_id)
+        bot.send_message(chat_id, f"حصلت مشكلة: {str(e)}")
 
 bot.infinity_polling()
